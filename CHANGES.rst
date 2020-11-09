@@ -50,6 +50,10 @@ Other changes
   (`#117 <https://github.com/pytest-dev/pytest-rerunfailures/pull/117>`_)
   (PR from `@gnikonorov`_)
 
+- Ensure ``pytest_runtest_logreport`` is called for all reports in a test.
+  (`#108 <https://github.com/pytest-dev/pytest-rerunfailures/issues/108>`_)
+  (PR from `@gnikonorov`_)
+
 .. _@gnikonorov: https://github.com/gnikonorov
 
 

@@ -240,40 +240,45 @@ def pytest_runtest_protocol(item, nextitem):
     parallel = hasattr(item.config, "slaveinput")
     item.execution_count = 0
 
-    need_to_run = True
-    while need_to_run:
+    need_to_rerun = True
+    while need_to_rerun:
         item.execution_count += 1
         item.ihook.pytest_runtest_logstart(nodeid=item.nodeid, location=item.location)
         reports = runtestprotocol(item, nextitem=nextitem, log=False)
 
+        need_to_rerun = False
         for report in reports:  # 3 reports: setup, call, teardown
             is_terminal_error = _should_hard_fail_on_error(item.session.config, report)
+            out_of_runs = item.execution_count > reruns
             report.rerun = item.execution_count - 1
             xfail = hasattr(report, "wasxfail")
             if (
-                item.execution_count > reruns
+                out_of_runs
                 or not report.failed
                 or xfail
                 or is_terminal_error
+                or need_to_rerun
             ):
-                # last run or no failure detected, log normally
+                # out of rerun attempts, no errors detected, or we're finishing off
+                # the reports of a failed test, log normally
                 item.ihook.pytest_runtest_logreport(report=report)
             else:
                 # failure detected and reruns not exhausted, since i < reruns
+                need_to_rerun = True
                 report.outcome = "rerun"
-                time.sleep(delay)
 
                 if not parallel or works_with_current_xdist():
                     # will rerun test, log intermediate result
                     item.ihook.pytest_runtest_logreport(report=report)
 
-                # cleanin item's cashed results from any level of setups
-                _remove_cached_results_from_failed_fixtures(item)
-                _remove_failed_setup_state_from_session(item)
+        if need_to_rerun:
+            # at least one report failed and we have reruns left
+            # prepare to rerun the test
+            time.sleep(delay)
 
-                break  # trigger rerun
-        else:
-            need_to_run = False
+            # cleanin item's cashed results from any level of setups
+            _remove_cached_results_from_failed_fixtures(item)
+            _remove_failed_setup_state_from_session(item)
 
         item.ihook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
 
