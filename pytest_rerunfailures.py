@@ -21,6 +21,8 @@ PYTEST_GTE_54 = pkg_resources.parse_version(
     pytest.__version__
 ) >= pkg_resources.parse_version("5.4")
 
+listOfFlakyTestCases = []
+
 
 def works_with_current_xdist():
     """Returns compatibility with installed pytest-xdist version.
@@ -68,6 +70,14 @@ def pytest_addoption(parser):
         type=float,
         default=0,
         help="add time (seconds) delay between reruns.",
+    )
+    group.addoption(
+        "--flaky-test-finder",
+        action="store",
+        dest="flaky_test_finder",
+        type=int,
+        default=0,
+        help="To find Flaky tests i.e. A test that passes after retries!",
     )
 
 
@@ -175,6 +185,14 @@ def get_reruns_delay(item):
     return delay
 
 
+def get_flaky_flag(item):
+    if int(item.session.config.option.flaky_test_finder) > 1:
+        warnings.warn(
+            "Suggested values: --flaky-test-find = <0 means disabled, 1 means enabled>."
+        )
+    return int(item.session.config.option.flaky_test_finder)
+
+
 def _remove_cached_results_from_failed_fixtures(item):
     """
     Note: remove all cached_result attribute from every fixture
@@ -258,6 +276,14 @@ def pytest_runtest_protocol(item, nextitem):
             ):
                 # last run or no failure detected, log normally
                 item.ihook.pytest_runtest_logreport(report=report)
+                if (
+                    item.execution_count != 1
+                    and not report.failed
+                    and report.when == "call"
+                    and get_flaky_flag(item) == 1
+                ):
+                    print("\nFLAKY TEST DETECTED: " + str(report.nodeid))
+                    listOfFlakyTestCases.append(str(report.nodeid))
             else:
                 # failure detected and reruns not exhausted, since i < reruns
                 report.outcome = "rerun"
@@ -277,6 +303,9 @@ def pytest_runtest_protocol(item, nextitem):
 
         item.ihook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
 
+    if nextitem is None and get_flaky_flag(item) == 1:
+        print("\nList of Flaky testcases in this run: ", listOfFlakyTestCases)
+
     return True
 
 
@@ -287,7 +316,7 @@ def pytest_report_teststatus(report):
         return "rerun", "R", ("RERUN", {"yellow": True})
 
 
-def pytest_terminal_summary(terminalreporter):
+def pytest_terminal_summary(terminalreporter, config):
     """Adapted from https://pytest.org/latest/_modules/_pytest/skipping.html
     """
     tr = terminalreporter
@@ -303,6 +332,9 @@ def pytest_terminal_summary(terminalreporter):
         tr._tw.sep("=", "rerun test summary info")
         for line in lines:
             tr._tw.line(line)
+
+    if config.option.flaky_test_finder == 1:
+        print("\nList of Flaky testcases in this run: ", listOfFlakyTestCases)
 
 
 def show_rerun(terminalreporter, lines):
