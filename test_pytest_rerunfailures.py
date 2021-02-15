@@ -8,9 +8,9 @@ import pytest
 
 pytest_plugins = "pytester"
 
-PYTEST_GTE_61 = pkg_resources.parse_version(
-    pytest.__version__
-) >= pkg_resources.parse_version("6.1")
+PYTEST_VERSION = pkg_resources.parse_version(pytest.__version__)
+PYTEST_GTE_60 = PYTEST_VERSION >= pkg_resources.parse_version("6.0")
+PYTEST_GTE_61 = PYTEST_VERSION >= pkg_resources.parse_version("6.1")
 
 
 def temporary_failure(count=1):
@@ -45,6 +45,7 @@ def assert_outcomes(
     check_outcome_field(outcomes, "passed", passed)
     check_outcome_field(outcomes, "skipped", skipped)
     check_outcome_field(outcomes, "failed", failed)
+    check_outcome_field(outcomes, "errors" if PYTEST_GTE_60 else "error", error)
     check_outcome_field(outcomes, "xfailed", xfailed)
     check_outcome_field(outcomes, "xpassed", xpassed)
     check_outcome_field(outcomes, "rerun", rerun)
@@ -550,3 +551,25 @@ def test_reruns_with_condition_marker(testdir, condition, expected_reruns):
 
     result = testdir.runpytest()
     assert_outcomes(result, passed=0, failed=1, rerun=expected_reruns)
+
+
+def test_session_scope_fixture_is_torn_down_once(testdir):
+    num_reruns = 3
+    testdir.makepyfile(
+        f"""
+        import pytest
+
+        _counter = -1
+        @pytest.fixture(scope="session")
+        def session_fixture():
+            global _counter
+            _counter += 1
+            yield _counter
+            del _counter
+
+        def test_dummy(session_fixture):
+            assert session_fixture == {num_reruns}
+        """
+    )
+    result = testdir.runpytest("--reruns", str(num_reruns))
+    assert_outcomes(result, rerun=num_reruns, passed=0, failed=1)

@@ -4,7 +4,9 @@ import warnings
 
 import pkg_resources
 import pytest
+from _pytest.reports import TestReport
 from _pytest.runner import runtestprotocol
+from _pytest.runner import SetupState
 
 HAS_RESULTLOG = False
 
@@ -24,6 +26,13 @@ PYTEST_GTE_54 = pkg_resources.parse_version(
 PYTEST_GTE_63 = pkg_resources.parse_version(
     pytest.__version__
 ) >= pkg_resources.parse_version("6.3.0.dev")
+
+
+class RerunAwareSetupState(SetupState):
+    def teardown_exact(self, item, nextitem):
+        if item.will_be_rerun:
+            nextitem = item
+        return super().teardown_exact(item, nextitem)
 
 
 def works_with_current_xdist():
@@ -83,6 +92,18 @@ def pytest_configure(config):
         "to 'reruns' times. Add a delay of 'reruns_delay' seconds "
         "between re-runs.",
     )
+
+
+def pytest_collection_modifyitems(items):
+    for item in items:
+        item.execution_count = 0
+        item.allowed_reruns = get_reruns_count(item) or 0
+        item.will_be_rerun = False
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionstart(session):
+    session._setupstate = RerunAwareSetupState()
 
 
 def _get_resultlog(config):
@@ -222,6 +243,20 @@ def _remove_failed_setup_state_from_session(item):
         setup_state.stack = []
 
 
+def _should_cause_rerun(item, report):
+    is_terminal_error = _should_hard_fail_on_error(item.session.config, report)
+    xfail = hasattr(report, "wasxfail")
+    condition = get_reruns_condition(item)
+    should_not_cause_rerun = (
+        item.execution_count > item.allowed_reruns
+        or not report.failed
+        or xfail
+        or is_terminal_error
+        or not condition
+    )
+    return not should_not_cause_rerun
+
+
 def _should_hard_fail_on_error(session_config, report):
     if report.outcome != "failed":
         return False
@@ -235,19 +270,6 @@ def _should_hard_fail_on_error(session_config, report):
             return False
 
     return True
-
-
-def _should_not_rerun(item, report, reruns):
-    xfail = hasattr(report, "wasxfail")
-    is_terminal_error = _should_hard_fail_on_error(item.session.config, report)
-    condition = get_reruns_condition(item)
-    return (
-        item.execution_count > reruns
-        or not report.failed
-        or xfail
-        or is_terminal_error
-        or not condition
-    )
 
 
 def pytest_runtest_protocol(item, nextitem):
@@ -271,13 +293,14 @@ def pytest_runtest_protocol(item, nextitem):
 
     need_to_run = True
     while need_to_run:
+        item.will_be_rerun = False
         item.execution_count += 1
         item.ihook.pytest_runtest_logstart(nodeid=item.nodeid, location=item.location)
         reports = runtestprotocol(item, nextitem=nextitem, log=False)
 
         for report in reports:  # 3 reports: setup, call, teardown
             report.rerun = item.execution_count - 1
-            if _should_not_rerun(item, report, reruns):
+            if not _should_cause_rerun(item, report):
                 # last run or no failure detected, log normally
                 item.ihook.pytest_runtest_logreport(report=report)
             else:
@@ -300,6 +323,12 @@ def pytest_runtest_protocol(item, nextitem):
         item.ihook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
 
     return True
+
+
+def pytest_runtest_makereport(item, call):
+    report = TestReport.from_item_and_call(item, call)
+    item.will_be_rerun |= _should_cause_rerun(item, report)
+    return report
 
 
 def pytest_report_teststatus(report):
