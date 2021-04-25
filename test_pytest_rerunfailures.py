@@ -23,6 +23,17 @@ def temporary_failure(count=1):
                 raise Exception('Failure: {{0}}'.format(count))"""
 
 
+def temporary_timeout(count=1):
+    return f"""
+            import py
+            import time
+            path = py.path.local(__file__).dirpath().ensure('test.res')
+            count = path.read() or 1
+            if int(count) <= {count}:
+                path.write(int(count) + 1)
+                time.sleep(15)"""
+
+
 def check_outcome_field(outcomes, field_name, expected_value):
     field_value = outcomes.get(field_name, 0)
     assert field_value == expected_value, (
@@ -163,6 +174,16 @@ def test_rerun_passes_after_temporary_test_failure(testdir):
             {temporary_failure()}"""
     )
     result = testdir.runpytest("--reruns", "1", "-r", "R")
+    assert_outcomes(result, passed=1, rerun=1)
+
+
+def test_rerun_passes_after_temporary_test_timeout(testdir):
+    testdir.makepyfile(
+        f"""
+        def test_pass():
+            {temporary_timeout()}"""
+    )
+    result = testdir.runpytest("--reruns", "1", "-r", "R", "--timeout", "10")
     assert_outcomes(result, passed=1, rerun=1)
 
 

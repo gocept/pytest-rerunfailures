@@ -1,10 +1,15 @@
+import os
 import re
 import time
 import warnings
+import tempfile
 
 import pkg_resources
 import pytest
 from _pytest.runner import runtestprotocol
+from sqlitedict import SqliteDict
+from functools import lru_cache
+from contextlib import contextmanager
 
 HAS_RESULTLOG = False
 
@@ -250,12 +255,102 @@ def _should_not_rerun(item, report, reruns):
     )
 
 
+def is_master(config):
+    return not (hasattr(config, "workerinput") or hasattr(config, "slaveinput"))
+
+
+def pytest_configure(config):
+    if is_master(config):
+        fp = tempfile.NamedTemporaryFile()
+        fp.close()
+        with open(fp.name, 'w+') as _:
+            pass
+
+        config.failures_log = fp.name
+
+
+def pytest_unconfigure(config):
+    if is_master(config):
+        os.remove(config.failures_log)
+
+
+def pytest_configure_node(node):
+    """xdist hook"""
+    node.workerinput['failures_log'] = node.config.failures_log
+
+
+def failures_log(config):
+    if is_master(config):
+        return config.failures_log
+    else:
+        return config.workerinput['failures_log']
+
+
+@lru_cache(maxsize=5)
+def failures_db(path):
+    return StatusDB(path)
+
+
+def log_db(config):
+    return failures_db(failures_log(config))
+
+
+class StatusDB(object):
+    def __init__(self, path):
+        self.db = SqliteDict(path)
+
+    @contextmanager
+    def _record(self, item):
+        with self.db as db:
+            if item in db:
+                record = db[item]
+            else:
+                record = {'failures': 0, 'reruns': 0}
+
+        failures, reruns = record['failures'], record['reruns']
+        yield record
+        if record['failures'] == failures and record['reruns'] == reruns:
+            return
+
+        with self.db as db:
+            db[item] = record
+            db.commit()
+
+    def add_test_failure(self, crashitem):
+        with self._record(crashitem) as record:
+            record['failures'] += 1
+
+    def get_test_failures(self, crashitem):
+        with self._record(crashitem) as record:
+            return record['failures']
+
+    def set_test_reruns(self, crashitem, reruns):
+        with self._record(crashitem) as record:
+            record['reruns'] = reruns
+
+    def get_test_reruns(self, crashitem):
+        with self._record(crashitem) as record:
+            return record['reruns']
+
+
+def pytest_handlecrashitem(crashitem, report, sched):
+    """
+    Return the crashitem from pending and collection.
+    """
+    db = log_db(sched.config)
+    reruns = db.get_test_reruns(crashitem)
+    if db.get_test_failures(crashitem) < reruns:
+        sched.mark_test_pending(crashitem)
+        report.outcome = "rerun"
+
+    db.add_test_failure(crashitem)
+
+
 def pytest_runtest_protocol(item, nextitem):
     """
     Note: when teardown fails, two reports are generated for the case, one for
     the test case and the other for the teardown error.
     """
-
     reruns = get_reruns_count(item)
     if reruns is None:
         # global setting is not specified, and this test is not marked with
@@ -266,8 +361,15 @@ def pytest_runtest_protocol(item, nextitem):
     # first item if necessary
     check_options(item.session.config)
     delay = get_reruns_delay(item)
-    parallel = hasattr(item.config, "slaveinput") or hasattr(item.config, "workerinput")
-    item.execution_count = 0
+    parallel = not is_master(item.config)
+    item_location = item.location
+    item_location_str = (item_location[0] + '::' + item_location[2]).replace('\\', '/')
+    db = log_db(item.session.config)
+    item.execution_count = db.get_test_failures(item_location_str)
+    db.set_test_reruns(item_location_str, reruns)
+
+    if item.execution_count > reruns:
+        return True
 
     need_to_run = True
     while need_to_run:

@@ -13,7 +13,7 @@ setup(
     url="https://github.com/pytest-dev/pytest-rerunfailures",
     py_modules=["pytest_rerunfailures"],
     entry_points={"pytest11": ["rerunfailures = pytest_rerunfailures"]},
-    install_requires=["setuptools>=40.0", "pytest >= 5.0"],
+    install_requires=["setuptools>=40.0", "pytest >= 5.0", "sqlitedict"],
     python_requires=">=3.6",
     license="Mozilla Public License 2.0 (MPL 2.0)",
     keywords="py.test pytest rerun failures flaky",
