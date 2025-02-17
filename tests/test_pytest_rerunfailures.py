@@ -551,7 +551,7 @@ def test_execution_count_exposed(testdir):
             assert item.execution_count == 3"""
     )
     result = testdir.runpytest("--reruns", "2")
-    assert_outcomes(result, passed=3, rerun=2)
+    assert_outcomes(result, passed=1, rerun=2)
 
 
 def test_rerun_report(testdir):
